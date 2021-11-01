@@ -41,7 +41,7 @@ struct mqtt_settings {
 	void		(*mqtt_on_suback)(struct mqtt_conn *, int,
 			      uint8_t *, size_t);
 	void		(*mqtt_on_unsuback)(struct mqtt_conn *, int);
-			  
+	void		(*mqtt_dead)(struct mqtt_conn *);
 };
 
 struct mqtt_conn_settings {
@@ -68,6 +68,7 @@ struct mqtt_conn	*mqtt_conn_create(const struct mqtt_settings *,
 int			 mqtt_connect(struct mqtt_conn *,
 			     const struct mqtt_conn_settings *);
 void			*mqtt_cookie(struct mqtt_conn *);
+const char		*mqtt_errstr(struct mqtt_conn *);
 void			 mqtt_input(struct mqtt_conn *, const void *, size_t);
 void			 mqtt_output(struct mqtt_conn *);
 void			 mqtt_disconnect(struct mqtt_conn *);

@@ -64,3 +64,15 @@ struct mqtt_p_connect {
 #define MQTT_CONNECT_F_USERNAME			(1 << 7)
 	struct mqtt_u16		keep_alive;
 };
+
+struct mqtt_p_connack {
+	uint8_t			flags;
+#define MQTT_CONNACK_F_SP			(1 << 0)
+	uint8_t			code;
+#define MQTT_CONNACK_ACCEPTED			0x00
+#define MQTT_CONNACK_PROTO_VERSION		0x01
+#define MQTT_CONNACK_IDENTIFIER			0x02
+#define MQTT_CONNACK_SERVER_UNAVAILABLE		0x03
+#define MQTT_CONNACK_BAD_CREDENTIALS		0x04
+#define MQTT_CONNACK_NOT_AUTHORIZED		0x05
+};

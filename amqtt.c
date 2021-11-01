@@ -25,6 +25,14 @@
 #include "mqtt_protocol.h"
 #include "amqtt.h"
 
+#ifndef min
+#define min(_a, _b)	((_a) < (_b) ? (_a) : (_b))
+#endif
+
+#ifndef ISSET
+#define ISSET(_v, _m)	((_v) & (_m))
+#endif
+
 struct mqtt_message {
 	uint8_t		*mm_buf;
 	size_t		 mm_len;
@@ -37,13 +45,47 @@ struct mqtt_message {
 
 TAILQ_HEAD(mqtt_messages, mqtt_message);
 
+enum mqtt_state {
+	MQTT_S_IDLE,
+	MQTT_S_REMLEN,
+
+	MQTT_S_MEMCPY,
+
+	MQTT_S_TOPIC_LEN_HI,
+	MQTT_S_TOPIC_LEN_LO,
+	MQTT_S_PID_HI,
+	MQTT_S_PID_LO,
+	MQTT_S_PAYLOAD,
+	MQTT_S_PUB_DONE,
+
+	MQTT_S_DONE,
+
+	MQTT_S_DEAD,
+};
+
 struct mqtt_conn {
 	void		*mc_cookie;
 	const struct mqtt_settings
 			*mc_settings;
+	const char	*mc_errstr;
 
 	struct mqtt_messages
 			 mc_messages;
+
+	enum mqtt_state	 mc_state;
+	enum mqtt_state	 mc_nstate;
+	int		 mc_type;
+	uint8_t		 mc_flags;
+
+	unsigned int	 mc_remlen;
+
+	uint8_t		*mc_mem;
+	unsigned int	 mc_len;
+	unsigned int	 mc_off;
+
+	uint8_t		*mc_topic;
+	unsigned int	 mc_topic_len;
+	int		 mc_pid;
 };
 
 static size_t
@@ -80,6 +122,7 @@ mqtt_lenstr(void *buf, uint16_t len, const void *str)
 {
 	struct mqtt_u16 *mu16 = buf;
 
+	mqtt_u16(mu16, len);
 	memcpy(mu16 + 1, str, len);
 
 	return (sizeof(*mu16) + len);
@@ -89,6 +132,12 @@ void *
 mqtt_cookie(struct mqtt_conn *mc)
 {
 	return (mc->mc_cookie);
+}
+
+const char *
+mqtt_errstr(struct mqtt_conn *mc)
+{
+	return (mc->mc_errstr);
 }
 
 struct mqtt_conn *
@@ -103,6 +152,8 @@ mqtt_conn_create(const struct mqtt_settings *ms, void *cookie)
 	mc->mc_cookie = cookie;
 	mc->mc_settings = ms;
 	TAILQ_INIT(&mc->mc_messages);
+
+	mc->mc_state = MQTT_S_IDLE;
 
 	return (mc);
 }
@@ -135,10 +186,238 @@ mqtt_enqueue(struct mqtt_conn *mc, int id, void *msg, size_t len)
 	return (0);
 }
 
-void
-mqtt_input(struct mqtt_conn *mc, const void *buf, size_t len)
+static enum mqtt_state
+mqtt_memcpy(struct mqtt_conn *mc, size_t len, enum mqtt_state nstate)
 {
+	mc->mc_mem = malloc(len);
+	if (mc->mc_mem == NULL)
+		return (MQTT_S_DEAD);
 
+	mc->mc_len = len;
+	mc->mc_off = 0;
+	mc->mc_nstate = nstate;
+
+	return (MQTT_S_MEMCPY);
+}
+
+static enum mqtt_state
+mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
+{
+	enum mqtt_state state = mc->mc_state;
+	uint8_t type, flags;
+
+	switch (state) {
+	case MQTT_S_IDLE:
+		type = (ch >> 4) & 0xf;
+		flags = (ch >> 0) & 0xf;
+
+		switch (type) {
+		case MQTT_T_CONNECT:
+			return (MQTT_S_DEAD);
+		case MQTT_T_CONNACK:
+			if (flags != 0)
+				return (MQTT_S_DEAD);
+			/* check if this is first? */
+			break;
+
+		case MQTT_T_PUBLISH:
+			break;
+
+		case MQTT_T_PUBACK:
+			return (MQTT_S_DEAD);
+		case MQTT_T_PUBREC:
+			return (MQTT_S_DEAD);
+		case MQTT_T_PUBREL:
+			return (MQTT_S_DEAD);
+		case MQTT_T_PUBCOMP:
+			return (MQTT_S_DEAD);
+
+		case MQTT_T_SUBSCRIBE:
+			return (MQTT_S_DEAD);
+		case MQTT_T_SUBACK:
+			break;
+
+		case MQTT_T_UNSUBSCRIBE:
+			return (MQTT_S_DEAD);
+		case MQTT_T_UNSUBACK:
+			break;
+
+		case MQTT_T_PINGREQ:
+			return (MQTT_S_DEAD);
+		case MQTT_T_PINGRESP:
+			break;
+
+		case MQTT_T_DISCONNECT:
+			return (MQTT_S_DEAD);
+
+		default:
+			return (MQTT_S_DEAD);
+		}
+
+		mc->mc_type = type;
+		mc->mc_flags = flags;
+		mc->mc_remlen = 0;
+
+		return (MQTT_S_REMLEN);
+
+	case MQTT_S_REMLEN:
+		mc->mc_remlen <<= 7;
+		mc->mc_remlen |= ch & 0x7f;
+		if (mc->mc_remlen > MQTT_MAX_REMLEN)
+			return (MQTT_S_DEAD);
+
+		if (ch & 0x80)
+			return (state);
+
+		if (mc->mc_type == MQTT_T_PUBLISH) {
+			if (mc->mc_remlen < sizeof(struct mqtt_u16))
+				return (MQTT_S_DEAD);
+			mc->mc_remlen -= sizeof(struct mqtt_u16);
+
+			return (MQTT_S_TOPIC_LEN_HI);
+		}
+
+		return (mqtt_memcpy(mc, mc->mc_remlen, MQTT_S_DONE));
+
+	case MQTT_S_MEMCPY:
+		/* this should be handled in mqtt_input() */
+		abort();
+
+	case MQTT_S_TOPIC_LEN_HI:
+		mc->mc_topic_len = (unsigned int)ch << 8;
+		return (MQTT_S_TOPIC_LEN_LO);
+	case MQTT_S_TOPIC_LEN_LO:
+		mc->mc_topic_len |= ch;
+
+		if (ISSET(mc->mc_flags, 0x3 << 1)) {
+			if (mc->mc_remlen < sizeof(struct mqtt_u16))
+				return (MQTT_S_DEAD);
+			mc->mc_remlen -= sizeof(struct mqtt_u16);
+
+			state = MQTT_S_PID_HI;
+		} else {
+			mc->mc_pid = -1;
+			state = MQTT_S_PAYLOAD;
+		}
+
+		if (mc->mc_topic_len > mc->mc_remlen)
+			return (MQTT_S_DEAD);
+		mc->mc_remlen -= mc->mc_topic_len;
+
+		return (mqtt_memcpy(mc, mc->mc_topic_len, state));
+
+	case MQTT_S_PID_HI:
+		mc->mc_pid = (unsigned int)ch << 8;
+		return (MQTT_S_PID_LO);
+	case MQTT_S_PID_LO:
+		mc->mc_pid |= (unsigned int)ch;
+
+		mc->mc_topic = mc->mc_mem;
+		return (mqtt_memcpy(mc, mc->mc_remlen, MQTT_S_PUB_DONE));
+
+	default:
+		abort();
+	}
+}
+
+static enum mqtt_state
+mqtt_connack(struct mqtt_conn *mc, const void *mem, size_t len)
+{
+	const struct mqtt_p_connack *pc;
+
+	if (len < sizeof(*pc))
+		return (MQTT_S_DEAD);
+
+	pc = mem;
+	if (pc->code != MQTT_CONNACK_ACCEPTED)
+		return (MQTT_S_DEAD);
+
+	(*mc->mc_settings->mqtt_on_connect)(mc);
+
+	return (MQTT_S_IDLE);
+}
+
+static enum mqtt_state
+mqtt_nstate(struct mqtt_conn *mc)
+{
+	enum mqtt_state state = mc->mc_nstate;
+
+	switch (state) {
+	case MQTT_S_PID_HI:
+		break;
+	case MQTT_S_PAYLOAD:
+		mc->mc_topic = mc->mc_mem;
+		if (mc->mc_remlen > 0) {
+			return (mqtt_memcpy(mc, mc->mc_remlen,
+			    MQTT_S_PUB_DONE));
+		}
+
+		mc->mc_mem = NULL;
+		mc->mc_len = 0;
+		/* FALLTHROUGH */
+
+	case MQTT_S_PUB_DONE:
+		/* we give the topic and payload to the main app */
+		(*mc->mc_settings->mqtt_on_message)(mc,
+		    mc->mc_topic, mc->mc_topic_len,
+		    mc->mc_mem, mc->mc_len,
+		    (mc->mc_flags >> 1) & 0x3, mc->mc_pid);
+		state = MQTT_S_IDLE;
+		break;
+
+	case MQTT_S_DONE:
+		switch (mc->mc_type) {
+		case MQTT_T_CONNACK:
+			state = mqtt_connack(mc, mc->mc_mem, mc->mc_len);
+			break;
+		default:
+			abort();
+		}
+		free(mc->mc_mem);
+		break;
+	default:
+		abort();
+	}
+
+	return (state);
+}
+
+void
+mqtt_input(struct mqtt_conn *mc, const void *ptr, size_t len)
+{
+	enum mqtt_state state = mc->mc_state;
+	const uint8_t *buf = ptr;
+	size_t rem;
+
+	do {
+		switch (state) {
+		case MQTT_S_MEMCPY:
+			rem = mc->mc_len - mc->mc_off;
+			if (len < rem)
+				rem = len;
+
+			memcpy(mc->mc_mem + mc->mc_off, buf, rem);
+			mc->mc_off += rem;
+			if (mc->mc_off == mc->mc_len)
+				state = mqtt_nstate(mc);
+
+			buf += rem;
+			len -= rem;
+			break;
+		default:
+			state = mqtt_parse(mc, *buf);
+			buf++;
+			len--;
+			break;
+		}
+
+		if (state == MQTT_S_DEAD) {
+			(*mc->mc_settings->mqtt_dead)(mc);
+			return;
+		}
+
+		mc->mc_state = state;
+	} while (len > 0);
 }
 
 void
@@ -154,7 +433,7 @@ mqtt_output(struct mqtt_conn *mc)
 			return;
 
 		mm->mm_off += rv;
-		if (mm->mm_off <= mm->mm_len) {
+		if (mm->mm_off < mm->mm_len) {
 			(*mc->mc_settings->mqtt_want_output)(mc);
 			return;
 		}
@@ -176,7 +455,7 @@ mqtt_connect(struct mqtt_conn *mc, const struct mqtt_conn_settings *mcs)
 	size_t len = sizeof(*pc);
 	size_t hlen;
 	uint8_t flags = 0;
-	uint16_t keep_alive = 30;
+	int keep_alive = 30;
 
 	if (mcs->clean_session)
 		flags |= MQTT_CONNECT_F_CLEAN_SESSION;
@@ -206,16 +485,18 @@ mqtt_connect(struct mqtt_conn *mc, const struct mqtt_conn_settings *mcs)
 	}
 
 	if (mcs->username != NULL) {
-		if (mcs->username_len > 0xfff)
+		if (mcs->username_len > MQTT_MAX_LEN)
 			return (-1);
-		len += sizeof(struct mqtt_u16) + mcs->username_len;
 
+		len += sizeof(struct mqtt_u16) + mcs->username_len;
 		flags |= MQTT_CONNECT_F_USERNAME;
 
 		if (mcs->password != NULL) {
 			if (mcs->password_len > MQTT_MAX_LEN)
 				return (-1);
+
 			len += sizeof(struct mqtt_u16) + mcs->password_len;
+			flags |= MQTT_CONNECT_F_PASSWORD;
 		}
 	}
 
