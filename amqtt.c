@@ -37,6 +37,7 @@ struct mqtt_message {
 	uint8_t		*mm_buf;
 	size_t		 mm_len;
 	size_t		 mm_off;
+	void		*mm_cookie;
 	int		 mm_id;
 
 	TAILQ_ENTRY(mqtt_message)
@@ -69,9 +70,15 @@ struct mqtt_conn {
 			*mc_settings;
 	const char	*mc_errstr;
 
+	uint16_t	 mc_id;
+
+	/* output state */
 	struct mqtt_messages
 			 mc_messages;
+	struct mqtt_messages
+			 mc_pending;
 
+	/* input parser state */
 	enum mqtt_state	 mc_state;
 	enum mqtt_state	 mc_nstate;
 	int		 mc_type;
@@ -110,22 +117,35 @@ mqtt_header_set(void *buf, uint8_t type, uint8_t flags, size_t len)
 	return (rv);
 }
 
-static void
-mqtt_u16(struct mqtt_u16 *mu16, uint16_t u16)
+static uint16_t
+mqtt_u16_rd(const void *buf)
 {
+	const struct mqtt_u16 *mu16 = buf;
+
+	return ((uint16_t)mu16->hi << 8 | (uint16_t)mu16->lo << 0);
+}
+
+static size_t
+mqtt_u16(void *buf, uint16_t u16)
+{
+	struct mqtt_u16 *mu16 = buf;
+
 	mu16->hi = u16 >> 8;
 	mu16->lo = u16 >> 0;
+
+	return (sizeof(*mu16));
 }
 
 static size_t
 mqtt_lenstr(void *buf, uint16_t len, const void *str)
 {
-	struct mqtt_u16 *mu16 = buf;
+	uint8_t *bytes = buf;
+	size_t blen;
 
-	mqtt_u16(mu16, len);
-	memcpy(mu16 + 1, str, len);
+	blen = mqtt_u16(bytes, len);
+	memcpy(bytes + blen, str, len);
 
-	return (sizeof(*mu16) + len);
+	return (blen + len);
 }
 
 void *
@@ -149,9 +169,12 @@ mqtt_conn_create(const struct mqtt_settings *ms, void *cookie)
 	if (mc == NULL)
 		return (NULL);
 
+	mc->mc_id = arc4random(); /* random starting point */
+
 	mc->mc_cookie = cookie;
 	mc->mc_settings = ms;
 	TAILQ_INIT(&mc->mc_messages);
+	TAILQ_INIT(&mc->mc_pending);
 
 	mc->mc_state = MQTT_S_IDLE;
 
@@ -165,7 +188,7 @@ mqtt_conn_destroy(struct mqtt_conn *mc)
 }
 
 static int
-mqtt_enqueue(struct mqtt_conn *mc, int id, void *msg, size_t len)
+mqtt_enqueue(struct mqtt_conn *mc, void *cookie, int id, void *msg, size_t len)
 {
 	struct mqtt_message *mm;
 
@@ -176,6 +199,7 @@ mqtt_enqueue(struct mqtt_conn *mc, int id, void *msg, size_t len)
 	mm->mm_buf = msg;
 	mm->mm_len = len;
 	mm->mm_off = 0;
+	mm->mm_cookie = cookie;
 	mm->mm_id = id;
 
 	TAILQ_INSERT_TAIL(&mc->mc_messages, mm, mm_entry);
@@ -184,6 +208,38 @@ mqtt_enqueue(struct mqtt_conn *mc, int id, void *msg, size_t len)
 	mqtt_output(mc);
 
 	return (0);
+}
+
+static int
+mqtt_id_isset(struct mqtt_messages *mms, int id)
+{
+	struct mqtt_message *mm;
+
+	TAILQ_FOREACH(mm, mms, mm_entry) {
+		if (mm->mm_id == id)
+			return (1);
+	}
+
+	return (0);
+}
+
+static int
+mqtt_id(struct mqtt_conn *mc)
+{
+	int id;
+
+	for (;;) {
+		id = mc->mc_id++;
+
+		if (mqtt_id_isset(&mc->mc_messages, id))
+			continue;
+		if (mqtt_id_isset(&mc->mc_pending, id))
+			continue;
+
+		break;
+	}
+
+	return (id);
 }
 
 static enum mqtt_state
@@ -337,6 +393,52 @@ mqtt_connack(struct mqtt_conn *mc, const void *mem, size_t len)
 	return (MQTT_S_IDLE);
 }
 
+static struct mqtt_message *
+mqtt_get_pending(struct mqtt_conn *mc, int pid)
+{
+	struct mqtt_message *mm;
+
+	/* don't need SAFE here cos we're not iterating past the removal */
+	TAILQ_FOREACH(mm, &mc->mc_pending, mm_entry) {
+		if (mm->mm_id == pid) {
+			TAILQ_REMOVE(&mc->mc_pending, mm, mm_entry);
+			return (mm);
+		}
+	}
+
+	return (NULL);
+}
+
+static enum mqtt_state
+mqtt_suback(struct mqtt_conn *mc, const void *mem, size_t len)
+{
+	struct mqtt_message *mm;
+	const struct mqtt_u16 *mu16 = mem;
+	const uint8_t *buf;
+	void *cookie;
+	int pid;
+
+	if (len < sizeof(*mu16))
+		return (MQTT_S_DEAD);
+
+	pid = mqtt_u16_rd(mu16);
+	mm = mqtt_get_pending(mc, pid);
+	if (mm == NULL)
+		return (MQTT_S_DEAD);
+
+	cookie = mm->mm_cookie;
+	free(mm);
+
+	buf = (const uint8_t *)(mu16 + 1);
+	len -= sizeof(*mu16);
+	if (len == 0)
+		return (MQTT_S_DEAD);
+
+	(*mc->mc_settings->mqtt_on_suback)(mc, cookie, buf, len);
+
+	return (MQTT_S_IDLE);
+}
+
 static enum mqtt_state
 mqtt_nstate(struct mqtt_conn *mc)
 {
@@ -361,7 +463,7 @@ mqtt_nstate(struct mqtt_conn *mc)
 		(*mc->mc_settings->mqtt_on_message)(mc,
 		    mc->mc_topic, mc->mc_topic_len,
 		    mc->mc_mem, mc->mc_len,
-		    (mc->mc_flags >> 1) & 0x3, mc->mc_pid);
+		    (mc->mc_flags >> 1) & 0x3);
 		state = MQTT_S_IDLE;
 		break;
 
@@ -369,6 +471,9 @@ mqtt_nstate(struct mqtt_conn *mc)
 		switch (mc->mc_type) {
 		case MQTT_T_CONNACK:
 			state = mqtt_connack(mc, mc->mc_mem, mc->mc_len);
+			break;
+		case MQTT_T_SUBACK:
+			state = mqtt_suback(mc, mc->mc_mem, mc->mc_len);
 			break;
 		default:
 			abort();
@@ -442,6 +547,8 @@ mqtt_output(struct mqtt_conn *mc)
 		free(mm->mm_buf);
 		if (mm->mm_id == -1)
 			free(mm);
+		else
+			TAILQ_INSERT_TAIL(&mc->mc_pending, mm, mm_entry);
 
 		mm = TAILQ_FIRST(&mc->mc_messages);
 	} while (mm != NULL);
@@ -539,7 +646,7 @@ mqtt_connect(struct mqtt_conn *mc, const struct mqtt_conn_settings *mcs)
 	}
 
 	/* try to shove the message onto the transport straight away */
-	if (mqtt_enqueue(mc, -1, msg, hlen + len) == -1) {
+	if (mqtt_enqueue(mc, NULL, -1, msg, hlen + len) == -1) {
 		free(msg);
 		return (-1);
 	}
@@ -592,7 +699,49 @@ mqtt_publish(struct mqtt_conn *mc,
 	memcpy(buf, payload, payload_len);
 
 	/* try to shove the message onto the transport straight away */
-	if (mqtt_enqueue(mc, -1, msg, hlen + len) == -1) {
+	if (mqtt_enqueue(mc, NULL, -1, msg, hlen + len) == -1) {
+		free(msg);
+		return (-1);
+	}
+
+	return (0);
+}
+
+int
+mqtt_subscribe(struct mqtt_conn *mc, void *cookie,
+    const char *filter, size_t filter_len, enum mqtt_qos qos)
+{
+	uint8_t *msg, *buf;
+	int pid;
+	size_t len = 0;
+	size_t hlen;
+
+	len += sizeof(struct mqtt_u16); /* pid */
+
+	if (filter_len > MQTT_MAX_LEN)
+		return (-1);
+
+	len += sizeof(struct mqtt_u16) + filter_len;
+	len += sizeof(uint8_t); /* requested qos */
+
+	if (len > MQTT_MAX_REMLEN)
+		return (-1);
+
+	msg = malloc(sizeof(struct mqtt_header) + len);
+	if (msg == NULL)
+		return (-1);
+
+	hlen = mqtt_header_set(msg, MQTT_T_SUBSCRIBE, 0x2 /* wat */, len);
+	buf = msg + hlen;
+
+	pid = mqtt_id(mc);
+	buf += mqtt_u16(buf, pid);
+
+	buf += mqtt_lenstr(buf, filter_len, filter);
+	*buf = qos;
+
+	/* try to shove the message onto the transport straight away */
+	if (mqtt_enqueue(mc, cookie, pid, msg, hlen + len) == -1) {
 		free(msg);
 		return (-1);
 	}

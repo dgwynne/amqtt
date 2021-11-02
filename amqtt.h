@@ -37,9 +37,9 @@ struct mqtt_settings {
 	void		(*mqtt_on_connect)(struct mqtt_conn *);
 	void		(*mqtt_on_message)(struct mqtt_conn *,
 			      char *, size_t, char *, size_t,
-			      enum mqtt_qos, unsigned int);
-	void		(*mqtt_on_suback)(struct mqtt_conn *, int,
-			      uint8_t *, size_t);
+			      enum mqtt_qos);
+	void		(*mqtt_on_suback)(struct mqtt_conn *, void *,
+			      const uint8_t *, size_t);
 	void		(*mqtt_on_unsuback)(struct mqtt_conn *, int);
 	void		(*mqtt_dead)(struct mqtt_conn *);
 };
@@ -84,7 +84,7 @@ int			mqtt_publish(struct mqtt_conn *,
 			    const char *, size_t, const char *, size_t,
 			    enum mqtt_qos, unsigned int);
 
-int			mqtt_subscribe(struct mqtt_conn *,
+int			mqtt_subscribe(struct mqtt_conn *, void *,
 			    const char *, size_t, enum mqtt_qos);
 int			mqtt_subscribev(struct mqtt_conn *,
 			    const struct mqtt_topic *, int);
