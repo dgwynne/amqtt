@@ -320,11 +320,11 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 
 	case MQTT_S_REMLEN:
 		mc->mc_remlen |= (unsigned int)(ch & 0x7f) << mc->mc_shift;
-		if (mc->mc_remlen > MQTT_MAX_REMLEN)
-			return (MQTT_S_DEAD);
 
 		if (ch & 0x80) {
 			mc->mc_shift += 7;
+			if (mc->mc_shift > 28)
+				return (MQTT_S_DEAD);
 			return (state);
 		}
 
