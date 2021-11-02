@@ -85,6 +85,7 @@ struct mqtt_conn {
 	uint8_t		 mc_flags;
 
 	unsigned int	 mc_remlen;
+	unsigned int	 mc_shift;
 
 	uint8_t		*mc_mem;
 	unsigned int	 mc_len;
@@ -313,17 +314,19 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 		mc->mc_type = type;
 		mc->mc_flags = flags;
 		mc->mc_remlen = 0;
+		mc->mc_shift = 0;
 
 		return (MQTT_S_REMLEN);
 
 	case MQTT_S_REMLEN:
-		mc->mc_remlen <<= 7;
-		mc->mc_remlen |= ch & 0x7f;
+		mc->mc_remlen |= (unsigned int)(ch & 0x7f) << mc->mc_shift;
 		if (mc->mc_remlen > MQTT_MAX_REMLEN)
 			return (MQTT_S_DEAD);
 
-		if (ch & 0x80)
+		if (ch & 0x80) {
+			mc->mc_shift += 7;
 			return (state);
+		}
 
 		if (mc->mc_type == MQTT_T_PUBLISH) {
 			if (mc->mc_remlen < sizeof(struct mqtt_u16))
@@ -500,7 +503,6 @@ mqtt_input(struct mqtt_conn *mc, const void *ptr, size_t len)
 			rem = mc->mc_len - mc->mc_off;
 			if (len < rem)
 				rem = len;
-
 			memcpy(mc->mc_mem + mc->mc_off, buf, rem);
 			mc->mc_off += rem;
 			if (mc->mc_off == mc->mc_len)
