@@ -258,6 +258,21 @@ mqtt_memcpy(struct mqtt_conn *mc, size_t len, enum mqtt_state nstate)
 }
 
 static enum mqtt_state
+mqtt_strcpy(struct mqtt_conn *mc, size_t len, enum mqtt_state nstate)
+{
+	mc->mc_mem = malloc(len + 1);
+	if (mc->mc_mem == NULL)
+		return (MQTT_S_DEAD);
+
+	mc->mc_mem[len] = '\0';
+	mc->mc_len = len;
+	mc->mc_off = 0;
+	mc->mc_nstate = nstate;
+
+	return (MQTT_S_MEMCPY);
+}
+
+static enum mqtt_state
 mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 {
 	enum mqtt_state state = mc->mc_state;
@@ -363,7 +378,7 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 			return (MQTT_S_DEAD);
 		mc->mc_remlen -= mc->mc_topic_len;
 
-		return (mqtt_memcpy(mc, mc->mc_topic_len, state));
+		return (mqtt_strcpy(mc, mc->mc_topic_len, state));
 
 	case MQTT_S_PID_HI:
 		mc->mc_pid = (unsigned int)ch << 8;
@@ -372,7 +387,7 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 		mc->mc_pid |= (unsigned int)ch;
 
 		mc->mc_topic = mc->mc_mem;
-		return (mqtt_memcpy(mc, mc->mc_remlen, MQTT_S_PUB_DONE));
+		return (mqtt_strcpy(mc, mc->mc_remlen, MQTT_S_PUB_DONE));
 
 	default:
 		abort();
@@ -453,7 +468,7 @@ mqtt_nstate(struct mqtt_conn *mc)
 	case MQTT_S_PAYLOAD:
 		mc->mc_topic = mc->mc_mem;
 		if (mc->mc_remlen > 0) {
-			return (mqtt_memcpy(mc, mc->mc_remlen,
+			return (mqtt_strcpy(mc, mc->mc_remlen,
 			    MQTT_S_PUB_DONE));
 		}
 
