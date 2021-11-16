@@ -602,17 +602,16 @@ mqtt_connect(struct mqtt_conn *mc, const struct mqtt_conn_settings *mcs)
 	size_t len = sizeof(*pc);
 	size_t hlen;
 	uint8_t flags = 0;
-	int keep_alive = 30;
+	unsigned int keep_alive;
 
 	if (mcs->clean_session)
 		flags |= MQTT_CONNECT_F_CLEAN_SESSION;
-	if (mcs->keep_alive > 0) {
-		keep_alive = mcs->keep_alive;
-		if (keep_alive > 0xffff)
-			return (-1);
 
-		mc->mc_keepalive.tv_sec = mcs->keep_alive;
-	}
+	keep_alive = mcs->keep_alive;
+	if (keep_alive > 0xffff)
+		return (-1);
+
+	mc->mc_keepalive.tv_sec = mcs->keep_alive;
 
 	if (mcs->clientid_len > MQTT_MAX_LEN)
 		return (-1);
