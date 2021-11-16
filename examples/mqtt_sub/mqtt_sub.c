@@ -55,7 +55,8 @@ struct test {
 
 /* wrappers */
 
-static int	test_mqtt_connect(struct test *, const char *, int);
+static int	test_mqtt_connect(struct test *, unsigned int, const char *,
+		    int);
 
 static void	test_mqtt_rd(int, short, void *);
 static void	test_mqtt_wr(int, short, void *);
@@ -92,8 +93,8 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s [-46l] [-p port] -d deviceid -h host"
-	    " topic...\n", __progname);
+	fprintf(stderr, "usage: %s [-46l] [-k keepalive] [-p port]"
+	    " -d deviceid -h host topic...\n", __progname);
 
 	exit(1);
 }
@@ -107,10 +108,12 @@ main(int argc, char *argv[])
 	const char *port = "1883";
 	int lwt = 0;
 	int family = AF_UNSPEC;
+	unsigned int keepalive = 0;
 	int ch;
+	const char *errstr;
 	int fd;
 
-	while ((ch = getopt(argc, argv, "46d:h:lp:")) != -1) {
+	while ((ch = getopt(argc, argv, "46d:h:k:lp:")) != -1) {
 		switch (ch) {
 		case '4':
 			family = AF_INET;
@@ -123,6 +126,11 @@ main(int argc, char *argv[])
 			break;
 		case 'h':
 			host = optarg;
+			break;
+		case 'k':
+			keepalive = strtonum(optarg, 0x1, 0xffff, &errstr);
+			if (errstr != NULL)
+				errx(1, "keepalive %s: %s", optarg, errstr);
 			break;
 		case 'l':
 			lwt = 1;
@@ -189,7 +197,7 @@ main(int argc, char *argv[])
 	    test_mqtt_wr, test);
 	evtimer_set(&test->ev_tmo, test_mqtt_tmo, test);
 
-	if (test_mqtt_connect(test, device, lwt) == -1)
+	if (test_mqtt_connect(test, keepalive, device, lwt) == -1)
 		errx(1, "mqtt connect failed");
 
 	event_add(&test->ev_rd, NULL);
@@ -200,11 +208,12 @@ main(int argc, char *argv[])
 }
 
 static int
-test_mqtt_connect(struct test *test, const char *clientid, int lwt)
+test_mqtt_connect(struct test *test, unsigned int keep_alive,
+    const char *clientid, int lwt)
 {
 	struct mqtt_conn_settings mcs = {
 		.clean_session = 1,
-		.keep_alive = 3,
+		.keep_alive = keep_alive,
 
 		.clientid = clientid,
 		.clientid_len = strlen(clientid),
