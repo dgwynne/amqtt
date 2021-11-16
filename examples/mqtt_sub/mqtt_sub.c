@@ -35,14 +35,11 @@
 static int		test_connect(int, const char *, const char *);
 static int		setnbio(int);
 
-static const struct timeval teleperiod = { 10, 0 };
-
 struct test {
 	struct mqtt_conn	*mc;
 	struct event		 ev_rd;
 	struct event		 ev_wr;
 	struct event		 ev_tmo;
-	struct event		 ev_tick;
 
 	const char		*will_topic;
 	size_t			 will_topic_len;
@@ -51,7 +48,6 @@ struct test {
 	size_t			 tele_topic_len;
 
 	const char		*device;
-
 };
 
 /* wrappers */
@@ -61,7 +57,6 @@ static int	test_mqtt_connect(struct test *, const char *, int);
 static void	test_mqtt_rd(int, short, void *);
 static void	test_mqtt_wr(int, short, void *);
 static void	test_mqtt_tmo(int, short, void *);
-static void	test_mqtt_tick(int, short, void *);
 
 /* callbacks */
 
@@ -88,8 +83,6 @@ static const struct mqtt_settings test_mqtt_settings = {
 	.mqtt_on_suback = test_mqtt_on_suback,
 	.mqtt_dead = test_mqtt_dead,
 };
-
-void hexdump(const void *, size_t);
 
 __dead static void
 usage(void)
@@ -202,7 +195,6 @@ main(int argc, char *argv[])
 	event_set(&test->ev_wr, fd, EV_WRITE,
 	    test_mqtt_wr, test);
 	evtimer_set(&test->ev_tmo, test_mqtt_tmo, test);
-	evtimer_set(&test->ev_tick, test_mqtt_tick, test);
 
 	if (test_mqtt_connect(test, device, lwt) == -1)
 		errx(1, "mqtt connect failed");
@@ -322,7 +314,6 @@ test_mqtt_rd(int fd, short events, void *arg)
 
 	}
 
-	//hexdump(buf, rv);
 	mqtt_input(mc, buf, rv);
 }
 
@@ -373,7 +364,6 @@ test_mqtt_output(struct mqtt_conn *mc, const void *buf, size_t len)
 	if (len > 16)
 		len = 16;
 
-	//hexdump(buf, len);
 
 	rv = write(fd, buf, len);
 	if (rv == -1) {
@@ -416,10 +406,6 @@ test_mqtt_on_connect(struct mqtt_conn *mc)
 	    prefix_cmnd, test->device);
 	if (rv == -1 || (size_t)rv >= sizeof(filter))
 		errx(1, "cmnd filter format");
-
-	test_mqtt_tick(0, 0, test);
-
-	warnx("subscribing to %s", filter);
 
 	if (mqtt_subscribe(mc, NULL, filter, rv, MQTT_QOS0) == -1)
 		errx(1, "mqtt subscribe %s failed", filter);
@@ -483,62 +469,10 @@ static void
 test_mqtt_on_suback(struct mqtt_conn *mc, void *cookie,
     const uint8_t *rcodes, size_t nrcodes)
 {
-	warnx("subscribed!");
-}
-
-static void
-test_mqtt_tick(int nope, short events, void *arg)
-{
-	struct test *test = arg;
-	struct mqtt_conn *mc = test->mc;
-	char payload[128];
-	int rv;
-
-	evtimer_add(&test->ev_tick, &teleperiod);
-
-	rv = snprintf(payload, sizeof(payload), "%x%x",
-	    arc4random(), arc4random());
-	if (rv == -1 || (size_t)rv >= sizeof(payload))
-		errx(1, "tele payload");
-
-	rv = mqtt_publish(mc, test->tele_topic, test->tele_topic_len,
-	    payload, rv, MQTT_QOS0, 0);
-	if (rv == -1)
-		errx(1, "mqtt publish %s %s", test->tele_topic, payload);
 }
 
 static void
 test_mqtt_dead(struct mqtt_conn *mc)
 {
 	err(1, "%s", __func__);
-}
-
-static int
-printable(int ch)
-{
-	if (ch == '\0')
-		return ('_');
-	if (!isprint(ch))
-		return ('~');
-
-	return (ch);
-}
-
-void
-hexdump(const void *d, size_t datalen)
-{
-	const uint8_t *data = d;
-	size_t i, j = 0;
-
-	for (i = 0; i < datalen; i += j) {
-		printf("%4zu: ", i);
-		for (j = 0; j < 16 && i+j < datalen; j++)
-			printf("%02x ", data[i + j]);
-		while (j++ < 16)
-			printf("   ");
-		printf("|");
-		for (j = 0; j < 16 && i+j < datalen; j++)
-			putchar(printable(data[i + j]));
-		printf("|\n");
-	}
 }
