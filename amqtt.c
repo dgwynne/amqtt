@@ -543,13 +543,10 @@ mqtt_input(struct mqtt_conn *mc, const void *ptr, size_t len)
 			if (mc->mc_off == mc->mc_len)
 				state = mqtt_nstate(mc);
 
-			buf += rem;
-			len -= rem;
 			break;
 		default:
 			state = mqtt_parse(mc, *buf);
-			buf++;
-			len--;
+			rem = 1;
 			break;
 		}
 
@@ -557,6 +554,9 @@ mqtt_input(struct mqtt_conn *mc, const void *ptr, size_t len)
 			(*mc->mc_settings->mqtt_dead)(mc);
 			return;
 		}
+
+		buf += rem;
+		len -= rem;
 
 		mc->mc_state = state;
 	} while (len > 0);
