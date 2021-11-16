@@ -282,7 +282,7 @@ test_mqtt_rd(int fd, short events, void *arg)
 {
 	struct test *test = arg;
 	struct mqtt_conn *mc = test->mc;
-	char buf[16];
+	static char buf[128 << 10];
 	ssize_t rv;
 
 	rv = read(fd, buf, sizeof(buf));
@@ -353,10 +353,6 @@ test_mqtt_output(struct mqtt_conn *mc, const void *buf, size_t len)
 	struct test *test = mqtt_cookie(mc);
 	int fd = EVENT_FD(&test->ev_wr);
 	ssize_t rv;
-
-	if (len > 16)
-		len = 16;
-
 
 	rv = write(fd, buf, len);
 	if (rv == -1) {
