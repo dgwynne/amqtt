@@ -48,6 +48,9 @@ struct test {
 	size_t			 tele_topic_len;
 
 	const char		*device;
+
+	int			  argc;
+	char			**argv;
 };
 
 /* wrappers */
@@ -89,8 +92,8 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s [-46l] [-p port] -d deviceid -h host\n",
-	    __progname);
+	fprintf(stderr, "usage: %s [-46l] [-p port] -d deviceid -h host"
+	    " topic...\n", __progname);
 
 	exit(1);
 }
@@ -135,7 +138,7 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (argc > 0)
+	if (argc < 1)
 		usage();
 
 	if (host == NULL) {
@@ -168,6 +171,8 @@ main(int argc, char *argv[])
 	}
 
 	test->device = device;
+	test->argc = argc;
+	test->argv = argv;
 
 	if (setnbio(fd) == -1)
 		err(1, "set non-blocking");
@@ -370,20 +375,25 @@ test_mqtt_output(struct mqtt_conn *mc, const void *buf, size_t len)
 	return (rv);
 }
 
-static const char prefix_cmnd[] = "cmnd";
-#define prefix_cmnd_len (sizeof(prefix_cmnd) - 1)
-
 static void
 test_mqtt_on_connect(struct mqtt_conn *mc)
 {
 	struct test *test = mqtt_cookie(mc);
 	static const char online[] = "Online";
+	int i;
 
 	if (test->will_topic != NULL) {
 		if (mqtt_publish(mc, test->will_topic, test->will_topic_len,
 		    online, sizeof(online) - 1,
 		    MQTT_QOS0, 1) == -1)
 			errx(1, "mqtt_publish %s %s", test->will_topic, online);
+	}
+
+	for (i = 0; i < test->argc; i++) {
+		const char *arg = test->argv[i];
+		if (mqtt_subscribe(mc, NULL,
+		    arg, strlen(arg), MQTT_QOS0) == -1)
+			errx(1, "mqtt_subscribe %s", arg);
 	}
 }
 
@@ -392,51 +402,8 @@ test_mqtt_on_message(struct mqtt_conn *mc,
     char *topic, size_t topic_len, char *payload, size_t payload_len,
     enum mqtt_qos qos)
 {
-	struct test *test = mqtt_cookie(mc);
-	size_t device_len, cmnd_len;
-	size_t off;
-	const char *cmnd;
-	const char *sep;
+	printf("%s %s\n", topic, payload);
 
-	if (topic_len <= prefix_cmnd_len) {/* includes trailing '/' */
-		warnx("short prefix");
-		goto drop;
-	}
-	if (strncmp(topic, prefix_cmnd, prefix_cmnd_len) != 0) {
-		warnx("not %s prefix", prefix_cmnd);
-		goto drop;
-	}
-	off = prefix_cmnd_len;
-	if (topic[off++] != '/') {
-		warnx("first separator");
-		goto drop;
-	}
-
-	device_len = strlen(test->device);
-	if (topic_len <= (off + device_len)) { /* includes trailing '/' */
-		warnx("short cmnd/device len");
-		goto drop;
-	}
-	if (strncmp(topic + off, test->device, device_len) != 0) {
-		warnx("%s != %s", topic+off, test->device);
-		goto drop;
-	}
-	off += device_len;
-	if (topic[off++] != '/') {
-		warnx("second separator");
-		goto drop;
-	}
-
-	cmnd = topic + off;
-	cmnd_len = topic_len - off;
-	sep = memchr(cmnd, '/', cmnd_len);
-	if (sep != NULL)
-		cmnd_len = sep - cmnd;
-
-	warnx("cmnd %.*s (%s %zu)", (int)cmnd_len, cmnd, cmnd, cmnd_len);
-
-drop:
-	warnx("dropping %s %s", topic, payload);
 	free(topic);
 	free(payload);
 }
