@@ -167,18 +167,6 @@ main(int argc, char *argv[])
 		test->will_topic_len = rv;
 	}
 
-	{
-		char *tele_topic;
-		int rv;
-
-		rv = asprintf(&tele_topic, "tele/%s/RANDOM", device);
-		if (rv == -1)
-			errx(1, "tele topic");
-
-		test->tele_topic = tele_topic;
-		test->tele_topic_len = rv;
-	}
-
 	test->device = device;
 
 	if (setnbio(fd) == -1)
@@ -390,10 +378,6 @@ test_mqtt_on_connect(struct mqtt_conn *mc)
 {
 	struct test *test = mqtt_cookie(mc);
 	static const char online[] = "Online";
-	char filter[128];
-	int rv;
-
-	warnx("%s", __func__);
 
 	if (test->will_topic != NULL) {
 		if (mqtt_publish(mc, test->will_topic, test->will_topic_len,
@@ -401,14 +385,6 @@ test_mqtt_on_connect(struct mqtt_conn *mc)
 		    MQTT_QOS0, 1) == -1)
 			errx(1, "mqtt_publish %s %s", test->will_topic, online);
 	}
-
-	rv = snprintf(filter, sizeof(filter), "%s/%s/#",
-	    prefix_cmnd, test->device);
-	if (rv == -1 || (size_t)rv >= sizeof(filter))
-		errx(1, "cmnd filter format");
-
-	if (mqtt_subscribe(mc, NULL, filter, rv, MQTT_QOS0) == -1)
-		errx(1, "mqtt subscribe %s failed", filter);
 }
 
 static void
@@ -469,6 +445,7 @@ static void
 test_mqtt_on_suback(struct mqtt_conn *mc, void *cookie,
     const uint8_t *rcodes, size_t nrcodes)
 {
+
 }
 
 static void
