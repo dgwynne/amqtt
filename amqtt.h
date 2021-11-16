@@ -16,7 +16,7 @@
  */
 
 struct mqtt_conn;
-struct timeval;
+struct timespec;
 
 enum mqtt_qos {
 	MQTT_QOS0,
@@ -32,7 +32,8 @@ struct mqtt_settings {
 	ssize_t		(*mqtt_output)(struct mqtt_conn *,
 			      const void *, size_t);
 	void		(*mqtt_want_timeout)(struct mqtt_conn *,
-			      const struct timeval *);
+			      const struct timespec *);
+	void		(*mqtt_timeout)(struct mqtt_conn *);
 
 	void		(*mqtt_on_connect)(struct mqtt_conn *);
 	void		(*mqtt_on_message)(struct mqtt_conn *,
@@ -71,6 +72,7 @@ void			*mqtt_cookie(struct mqtt_conn *);
 const char		*mqtt_errstr(struct mqtt_conn *);
 void			 mqtt_input(struct mqtt_conn *, const void *, size_t);
 void			 mqtt_output(struct mqtt_conn *);
+void			 mqtt_timeout(struct mqtt_conn *);
 void			 mqtt_disconnect(struct mqtt_conn *);
 void			 mqtt_conn_destroy(struct mqtt_conn *);
 

@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "mqtt_protocol.h"
 #include "amqtt.h"
@@ -77,6 +78,8 @@ struct mqtt_conn {
 			 mc_messages;
 	struct mqtt_messages
 			 mc_pending;
+	struct timespec	 mc_keepalive;
+	unsigned int	 mc_pinging;
 
 	/* input parser state */
 	enum mqtt_state	 mc_state;
@@ -95,6 +98,8 @@ struct mqtt_conn {
 	unsigned int	 mc_topic_len;
 	int		 mc_pid;
 };
+
+#define MQTT_KEEPALIVES(_mc)	((_mc)->mc_keepalive.tv_sec > 0)
 
 static size_t
 mqtt_header_set(void *buf, uint8_t type, uint8_t flags, size_t len)
@@ -176,6 +181,9 @@ mqtt_conn_create(const struct mqtt_settings *ms, void *cookie)
 	mc->mc_settings = ms;
 	TAILQ_INIT(&mc->mc_messages);
 	TAILQ_INIT(&mc->mc_pending);
+	mc->mc_keepalive.tv_sec = 0;
+	mc->mc_keepalive.tv_nsec = 0;
+	mc->mc_pinging = 0;
 
 	mc->mc_state = MQTT_S_IDLE;
 
@@ -317,6 +325,8 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 		case MQTT_T_PINGREQ:
 			return (MQTT_S_DEAD);
 		case MQTT_T_PINGRESP:
+			if (flags != 0)
+				return (MQTT_S_DEAD);
 			break;
 
 		case MQTT_T_DISCONNECT:
@@ -343,12 +353,22 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 			return (state);
 		}
 
-		if (mc->mc_type == MQTT_T_PUBLISH) {
+		switch (mc->mc_type) {
+		case MQTT_T_PUBLISH:
 			if (mc->mc_remlen < sizeof(struct mqtt_u16))
 				return (MQTT_S_DEAD);
 			mc->mc_remlen -= sizeof(struct mqtt_u16);
 
 			return (MQTT_S_TOPIC_LEN_HI);
+
+		case MQTT_T_PINGRESP:
+			if (mc->mc_remlen != 0)
+				return (MQTT_S_DEAD);
+
+			mc->mc_pinging = 0;
+			return (MQTT_S_IDLE);
+		default:
+			break;
 		}
 
 		return (mqtt_memcpy(mc, mc->mc_remlen, MQTT_S_DONE));
@@ -569,6 +589,9 @@ mqtt_output(struct mqtt_conn *mc)
 
 		mm = TAILQ_FIRST(&mc->mc_messages);
 	} while (mm != NULL);
+
+	if (MQTT_KEEPALIVES(mc))
+		(*mc->mc_settings->mqtt_want_timeout)(mc, &mc->mc_keepalive);
 }
 
 int
@@ -587,6 +610,8 @@ mqtt_connect(struct mqtt_conn *mc, const struct mqtt_conn_settings *mcs)
 		keep_alive = mcs->keep_alive;
 		if (keep_alive > 0xffff)
 			return (-1);
+
+		mc->mc_keepalive.tv_sec = mcs->keep_alive;
 	}
 
 	if (mcs->clientid_len > MQTT_MAX_LEN)
@@ -764,4 +789,40 @@ mqtt_subscribe(struct mqtt_conn *mc, void *cookie,
 	}
 
 	return (0);
+}
+
+static int
+mqtt_pingreq(struct mqtt_conn *mc)
+{
+	uint8_t *msg;
+	size_t hlen;
+
+	msg = malloc(sizeof(struct mqtt_header));
+	if (msg == NULL)
+		return (-1);
+
+	hlen = mqtt_header_set(msg, MQTT_T_PINGREQ, 0x0 /* wat */, 0);
+
+	/* try to shove the message onto the transport straight away */
+	if (mqtt_enqueue(mc, NULL, -1, msg, hlen) == -1) {
+		free(msg);
+		return (-1);
+	}
+
+	return (0);
+}
+
+#include <err.h>
+
+void
+mqtt_timeout(struct mqtt_conn *mc)
+{
+	if (mc->mc_pinging) {
+		errx(1, "%s[%u]: no pingresp", __func__, __LINE__);
+	} else {
+		if (mqtt_pingreq(mc) == -1)
+			errx(1, "%s[%u]: pingreq failed", __func__, __LINE__);
+
+		mc->mc_pinging = 1;
+	}
 }
