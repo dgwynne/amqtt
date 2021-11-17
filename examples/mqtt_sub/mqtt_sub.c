@@ -32,6 +32,10 @@
 #include <event.h>
 #include "amqtt.h"
 
+#ifndef nitems
+#define nitems(_a) (sizeof((_a)) / sizeof((_a)[0]))
+#endif
+
 static int		test_connect(int, const char *, const char *);
 static int		setnbio(int);
 
@@ -109,6 +113,9 @@ main(int argc, char *argv[])
 	int lwt = 0;
 	int family = AF_UNSPEC;
 	unsigned int keepalive = 0;
+	char *defv[] = { "#" };
+	char **subv = defv;
+	int subc = nitems(defv);
 	int ch;
 	const char *errstr;
 	int fd;
@@ -146,8 +153,10 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (argc < 1)
-		usage();
+	if (argc > 0) {
+		subv = argv;
+		subc = argc;
+	}
 
 	if (host == NULL) {
 		warnx("host unspecified");
@@ -179,8 +188,8 @@ main(int argc, char *argv[])
 	}
 
 	test->device = device;
-	test->argc = argc;
-	test->argv = argv;
+	test->argc = subc;
+	test->argv = subv;
 
 	if (setnbio(fd) == -1)
 		err(1, "set non-blocking");
