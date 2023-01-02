@@ -24,6 +24,11 @@ enum mqtt_qos {
 	MQTT_QOS2,
 };
 
+enum mqtt_retain {
+	MQTT_NORETAIN,
+	MQTT_RETAIN,
+};
+
 struct mqtt_settings {
 	unsigned int	  mqtt_max_topic;
 	unsigned int	  mqtt_max_payload;
@@ -61,7 +66,7 @@ struct mqtt_conn_settings {
 	const char	*will_payload;
 	size_t		 will_payload_len;
 	enum mqtt_qos	 will_qos;
-	unsigned int	 will_retain;
+	enum mqtt_retain will_retain;
 };
 
 struct mqtt_conn	*mqtt_conn_create(const struct mqtt_settings *,
@@ -84,7 +89,7 @@ struct mqtt_topic {
 
 int			mqtt_publish(struct mqtt_conn *,
 			    const char *, size_t, const char *, size_t,
-			    enum mqtt_qos, unsigned int);
+			    enum mqtt_qos, enum mqtt_retain);
 
 int			mqtt_subscribe(struct mqtt_conn *, void *,
 			    const char *, size_t, enum mqtt_qos);

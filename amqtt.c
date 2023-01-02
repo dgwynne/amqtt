@@ -705,15 +705,23 @@ int
 mqtt_publish(struct mqtt_conn *mc,
     const char *topic, size_t topic_len,
     const char *payload, size_t payload_len,
-    enum mqtt_qos qos, unsigned int retain)
+    enum mqtt_qos qos, enum mqtt_retain retain)
 {
 	uint8_t *msg, *buf;
 	size_t len = 0;
 	size_t hlen;
 	uint8_t flags = 0;
 
-	if (retain)
+	switch (retain) {
+	case MQTT_RETAIN:
 		flags |= (1 << 0);
+		/* FALLTHROUGH */
+	case MQTT_NORETAIN:
+		break;
+	default:
+		return (-1); /* XXX */
+	}
+
 	flags |= qos << 1;
 
 	if (topic_len > MQTT_MAX_LEN)
