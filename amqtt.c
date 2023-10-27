@@ -39,6 +39,7 @@ struct mqtt_message {
 	size_t		 mm_len;
 	size_t		 mm_off;
 	void		*mm_cookie;
+	int		 mm_type;
 	int		 mm_id;
 
 	TAILQ_ENTRY(mqtt_message)
@@ -197,7 +198,8 @@ mqtt_conn_destroy(struct mqtt_conn *mc)
 }
 
 static int
-mqtt_enqueue(struct mqtt_conn *mc, void *cookie, int id, void *msg, size_t len)
+mqtt_enqueue(struct mqtt_conn *mc, void *cookie, int type, int id,
+    void *msg, size_t len)
 {
 	struct mqtt_message *mm;
 
@@ -209,6 +211,7 @@ mqtt_enqueue(struct mqtt_conn *mc, void *cookie, int id, void *msg, size_t len)
 	mm->mm_len = len;
 	mm->mm_off = 0;
 	mm->mm_cookie = cookie;
+	mm->mm_type = type;
 	mm->mm_id = id;
 
 	TAILQ_INSERT_TAIL(&mc->mc_messages, mm, mm_entry);
@@ -461,7 +464,7 @@ mqtt_suback(struct mqtt_conn *mc, const void *mem, size_t len)
 
 	pid = mqtt_u16_rd(mu16);
 	mm = mqtt_get_pending(mc, pid);
-	if (mm == NULL)
+	if (mm == NULL || mm->mm_type != MQTT_T_SUBSCRIBE)
 		return (MQTT_S_DEAD);
 
 	cookie = mm->mm_cookie;
@@ -473,6 +476,36 @@ mqtt_suback(struct mqtt_conn *mc, const void *mem, size_t len)
 		return (MQTT_S_DEAD);
 
 	(*mc->mc_settings->mqtt_on_suback)(mc, cookie, buf, len);
+
+	return (MQTT_S_IDLE);
+}
+
+static enum mqtt_state
+mqtt_unsuback(struct mqtt_conn *mc, const void *mem, size_t len)
+{
+	struct mqtt_message *mm;
+	const struct mqtt_u16 *mu16 = mem;
+	const uint8_t *buf;
+	void *cookie;
+	int pid;
+
+	if (len < sizeof(*mu16))
+		return (MQTT_S_DEAD);
+
+	pid = mqtt_u16_rd(mu16);
+	mm = mqtt_get_pending(mc, pid);
+	if (mm == NULL || mm->mm_type != MQTT_T_UNSUBSCRIBE)
+		return (MQTT_S_DEAD);
+
+	cookie = mm->mm_cookie;
+	free(mm);
+
+	buf = (const uint8_t *)(mu16 + 1);
+	len -= sizeof(*mu16);
+	if (len == 0)
+		return (MQTT_S_DEAD);
+
+	(*mc->mc_settings->mqtt_on_unsuback)(mc, cookie);
 
 	return (MQTT_S_IDLE);
 }
@@ -687,7 +720,8 @@ mqtt_connect(struct mqtt_conn *mc, const struct mqtt_conn_settings *mcs)
 	}
 
 	/* try to shove the message onto the transport straight away */
-	if (mqtt_enqueue(mc, NULL, -1, msg, hlen + len) == -1) {
+	if (mqtt_enqueue(mc, NULL, MQTT_T_CONNECT, -1,
+	    msg, hlen + len) == -1) {
 		free(msg);
 		return (-1);
 	}
@@ -748,7 +782,8 @@ mqtt_publish(struct mqtt_conn *mc,
 	memcpy(buf, payload, payload_len);
 
 	/* try to shove the message onto the transport straight away */
-	if (mqtt_enqueue(mc, NULL, -1, msg, hlen + len) == -1) {
+	if (mqtt_enqueue(mc, NULL, MQTT_T_PUBLISH, -1,
+	    msg, hlen + len) == -1) {
 		free(msg);
 		return (-1);
 	}
@@ -790,7 +825,49 @@ mqtt_subscribe(struct mqtt_conn *mc, void *cookie,
 	*buf = qos;
 
 	/* try to shove the message onto the transport straight away */
-	if (mqtt_enqueue(mc, cookie, pid, msg, hlen + len) == -1) {
+	if (mqtt_enqueue(mc, cookie, MQTT_T_SUBSCRIBE, pid,
+	    msg, hlen + len) == -1) {
+		free(msg);
+		return (-1);
+	}
+
+	return (0);
+}
+
+int
+mqtt_unsubscribe(struct mqtt_conn *mc, void *cookie,
+    const char *filter, size_t filter_len)
+{
+	uint8_t *msg, *buf;
+	int pid;
+	size_t len = 0;
+	size_t hlen;
+
+	len += sizeof(struct mqtt_u16); /* pid */
+
+	if (filter_len > MQTT_MAX_LEN)
+		return (-1);
+
+	len += sizeof(struct mqtt_u16) + filter_len;
+
+	if (len > MQTT_MAX_REMLEN)
+		return (-1);
+
+	msg = malloc(sizeof(struct mqtt_header) + len);
+	if (msg == NULL)
+		return (-1);
+
+	hlen = mqtt_header_set(msg, MQTT_T_UNSUBSCRIBE, 0x2 /* wat */, len);
+	buf = msg + hlen;
+
+	pid = mqtt_id(mc);
+	buf += mqtt_u16(buf, pid);
+
+	buf += mqtt_lenstr(buf, filter_len, filter);
+
+	/* try to shove the message onto the transport straight away */
+	if (mqtt_enqueue(mc, cookie, MQTT_T_UNSUBSCRIBE, pid,
+	    msg, hlen + len) == -1) {
 		free(msg);
 		return (-1);
 	}
@@ -811,7 +888,7 @@ mqtt_pingreq(struct mqtt_conn *mc)
 	hlen = mqtt_header_set(msg, MQTT_T_PINGREQ, 0x0 /* wat */, 0);
 
 	/* try to shove the message onto the transport straight away */
-	if (mqtt_enqueue(mc, NULL, -1, msg, hlen) == -1) {
+	if (mqtt_enqueue(mc, NULL, MQTT_T_PINGREQ, -1, msg, hlen) == -1) {
 		free(msg);
 		return (-1);
 	}
