@@ -485,7 +485,6 @@ mqtt_unsuback(struct mqtt_conn *mc, const void *mem, size_t len)
 {
 	struct mqtt_message *mm;
 	const struct mqtt_u16 *mu16 = mem;
-	const uint8_t *buf;
 	void *cookie;
 	int pid;
 
@@ -500,9 +499,8 @@ mqtt_unsuback(struct mqtt_conn *mc, const void *mem, size_t len)
 	cookie = mm->mm_cookie;
 	free(mm);
 
-	buf = (const uint8_t *)(mu16 + 1);
 	len -= sizeof(*mu16);
-	if (len == 0)
+	if (len != 0)
 		return (MQTT_S_DEAD);
 
 	(*mc->mc_settings->mqtt_on_unsuback)(mc, cookie);
@@ -545,6 +543,9 @@ mqtt_nstate(struct mqtt_conn *mc)
 			break;
 		case MQTT_T_SUBACK:
 			state = mqtt_suback(mc, mc->mc_mem, mc->mc_len);
+			break;
+		case MQTT_T_UNSUBACK:
+			state = mqtt_unsuback(mc, mc->mc_mem, mc->mc_len);
 			break;
 		default:
 			abort();
