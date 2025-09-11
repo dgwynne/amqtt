@@ -194,6 +194,28 @@ mqtt_conn_create(const struct mqtt_settings *ms, void *cookie)
 void
 mqtt_conn_destroy(struct mqtt_conn *mc)
 {
+	struct mqtt_message *mm, *nmm;
+
+	/* because linux doesn't have TAILQ_FOREACH_SAFE */
+
+	nmm = TAILQ_FIRST(&mc->mc_pending);
+	while ((mm = nmm) != NULL) {
+		nmm = TAILQ_NEXT(mm, mm_entry);
+
+		TAILQ_REMOVE(&mc->mc_pending, mm, mm_entry);
+		free(mm);
+	}
+
+	nmm = TAILQ_FIRST(&mc->mc_messages);
+	while ((mm = nmm) != NULL) {
+		nmm = TAILQ_NEXT(mm, mm_entry);
+
+		TAILQ_REMOVE(&mc->mc_messages, mm, mm_entry);
+		free(mm->mm_buf);
+		free(mm);
+	}
+
+	free(mc->mc_mem);
 	free(mc);
 }
 
@@ -551,6 +573,7 @@ mqtt_nstate(struct mqtt_conn *mc)
 			abort();
 		}
 		free(mc->mc_mem);
+		mc->mc_mem = NULL;
 		break;
 	default:
 		abort();
