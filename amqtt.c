@@ -401,6 +401,7 @@ mqtt_parse(struct mqtt_conn *mc, uint8_t ch)
 	case MQTT_S_MEMCPY:
 		/* this should be handled in mqtt_input() */
 		abort();
+		/* NOTREACHED */
 
 	case MQTT_S_TOPIC_LEN_HI:
 		mc->mc_topic_len = (unsigned int)ch << 8;
@@ -612,7 +613,8 @@ mqtt_input(struct mqtt_conn *mc, const void *ptr, size_t len)
 		}
 
 		if (state == MQTT_S_DEAD) {
-			(*mc->mc_settings->mqtt_dead)(mc);
+			(*mc->mc_settings->mqtt_dead)(mc,
+			    "parser cannot proceed");
 			return;
 		}
 
@@ -924,17 +926,13 @@ mqtt_pingreq(struct mqtt_conn *mc)
 	return (0);
 }
 
-#include <err.h>
-
 void
 mqtt_timeout(struct mqtt_conn *mc)
 {
-	if (mc->mc_pinging) {
-		errx(1, "%s[%u]: no pingresp", __func__, __LINE__);
-	} else {
-		if (mqtt_pingreq(mc) == -1)
-			errx(1, "%s[%u]: pingreq failed", __func__, __LINE__);
-
+	if (mc->mc_pinging)
+		(*mc->mc_settings->mqtt_dead)(mc, "timeout");
+	else if (mqtt_pingreq(mc) == -1)
+		(*mc->mc_settings->mqtt_dead)(mc, "pingreq");
+	else
 		mc->mc_pinging = 1;
-	}
 }

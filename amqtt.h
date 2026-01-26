@@ -47,7 +47,7 @@ struct mqtt_settings {
 	void		(*mqtt_on_suback)(struct mqtt_conn *, void *,
 			      const uint8_t *, size_t);
 	void		(*mqtt_on_unsuback)(struct mqtt_conn *, void *);
-	void		(*mqtt_dead)(struct mqtt_conn *);
+	void		(*mqtt_dead)(struct mqtt_conn *, const char *);
 };
 
 struct mqtt_conn_settings {
