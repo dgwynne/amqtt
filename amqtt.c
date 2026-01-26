@@ -555,6 +555,10 @@ mqtt_nstate(struct mqtt_conn *mc)
 		    mc->mc_topic, mc->mc_topic_len,
 		    mc->mc_mem, mc->mc_len,
 		    (mc->mc_flags >> 1) & 0x3);
+
+		/* the on_message handler was given ownership of this memory */
+		mc->mc_topic = NULL;
+		mc->mc_mem = NULL;
 		state = MQTT_S_IDLE;
 		break;
 
