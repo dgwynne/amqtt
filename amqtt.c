@@ -553,8 +553,8 @@ mqtt_nstate(struct mqtt_conn *mc)
 	case MQTT_S_PUB_DONE:
 		/* we give the topic and payload to the main app */
 		(*mc->mc_settings->mqtt_on_message)(mc,
-		    mc->mc_topic, mc->mc_topic_len,
-		    mc->mc_mem, mc->mc_len,
+		    (char *)mc->mc_topic, mc->mc_topic_len,
+		    (char *)mc->mc_mem, mc->mc_len,
 		    (mc->mc_flags >> 1) & 0x3);
 
 		/* the on_message handler was given ownership of this memory */
